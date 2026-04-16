@@ -1,53 +1,61 @@
-# src/create_splits.py
+# src/create_splits.py (FIXED - Exact Counts)
 import numpy as np
 from pathlib import Path
 from sklearn.model_selection import train_test_split
 import shutil
 
 def create_splits():
-    """Create train/val/test splits for training"""
+    """Create train/val/test splits with exact counts"""
     
     # Paths
     original_image_dir = Path("data/raw/images")
-    mask_dir = Path("data/processed/training_masks")  # Your grayscale masks
+    mask_dir = Path("data/processed/training_masks")
     
     print("=" * 60)
     print("CREATING TRAIN/VAL/TEST SPLITS")
     print("=" * 60)
-    print(f"Original images: {original_image_dir.absolute()}")
-    print(f"Mask directory: {mask_dir.absolute()}")
-    
-    # Check if directories exist
-    if not original_image_dir.exists():
-        print(f"\n❌ ERROR: {original_image_dir} not found!")
-        print("   Run csv_to_mask_training.py first.")
-        return
-    
-    if not mask_dir.exists():
-        print(f"\n❌ ERROR: {mask_dir} not found!")
-        print("   Run csv_to_mask_training.py first.")
-        return
     
     # Get all mask files
     mask_files = list(mask_dir.glob("*_mask.png"))
     image_ids = [f.stem.replace("_mask", "") for f in mask_files]
     
-    print(f"\nTotal images found: {len(image_ids)}")
+    total = len(image_ids)
+    print(f"Total images: {total}")
     
-    if len(image_ids) == 0:
-        print("No masks found! Run csv_to_mask_training.py first.")
+    if total == 0:
+        print("No masks found!")
         return
     
-    # Split: train (70%), val (15%), test (15%)
-    train_val, test = train_test_split(image_ids, test_size=0.15, random_state=42)
-    train, val = train_test_split(train_val, test_size=0.15/0.85, random_state=42)
+    # Calculate exact counts
+    test_count = int(total * 0.15)  # 60 for 400
+    val_count = int(total * 0.15)   # 60 for 400
+    train_count = total - test_count - val_count  # 280 for 400
     
-    print(f"\n📊 SPLIT RESULTS:")
-    print(f"   Train: {len(train)} images ({len(train)/len(image_ids)*100:.1f}%)")
-    print(f"   Val:   {len(val)} images ({len(val)/len(image_ids)*100:.1f}%)")
-    print(f"   Test:  {len(test)} images ({len(test)/len(image_ids)*100:.1f}%)")
+    print(f"\nTarget splits:")
+    print(f"  Train: {train_count} ({train_count/total*100:.1f}%)")
+    print(f"  Val:   {val_count} ({val_count/total*100:.1f}%)")
+    print(f"  Test:  {test_count} ({test_count/total*100:.1f}%)")
     
-    # Save split lists as text files
+    # First split: separate test set
+    train_val, test = train_test_split(
+        image_ids, 
+        test_size=test_count,  # Use exact count instead of ratio
+        random_state=42
+    )
+    
+    # Second split: separate val from train
+    train, val = train_test_split(
+        train_val,
+        test_size=val_count,  # Use exact count
+        random_state=42
+    )
+    
+    print(f"\nActual splits:")
+    print(f"  Train: {len(train)}")
+    print(f"  Val:   {len(val)}")
+    print(f"  Test:  {len(test)}")
+    
+    # Save split lists
     split_dir = Path("data/processed/splits")
     split_dir.mkdir(parents=True, exist_ok=True)
     
@@ -60,10 +68,15 @@ def create_splits():
     
     print(f"\n✓ Split lists saved to {split_dir}")
     
-    # Create organized folder structure
+    # Create organized folders
     organized_dir = Path("data/processed/organized")
     
-    print(f"\n📁 Creating organized folders in {organized_dir}...")
+    # Remove existing organized folder if it exists (to avoid leftover files)
+    if organized_dir.exists():
+        import shutil
+        shutil.rmtree(organized_dir)
+    
+    print(f"\n📁 Creating organized folders...")
     
     for split_name, split_ids in [('train', train), ('val', val), ('test', test)]:
         split_img_dir = organized_dir / split_name / "images"
@@ -88,19 +101,13 @@ def create_splits():
     
     print(f"\n✅ Organized data saved to {organized_dir}")
     
-    # Show example paths
-    print("\n" + "=" * 60)
-    print("EXAMPLE PATHS FOR TRAINING")
-    print("=" * 60)
-    print(f"Train image: {organized_dir}/train/images/0001-F-037Y1.jpg")
-    print(f"Train mask:  {organized_dir}/train/masks/0001-F-037Y1_mask.png")
+    # Verify
+    verify_splits(organized_dir)
     
     return train, val, test
 
-def verify_splits():
+def verify_splits(organized_dir):
     """Verify splits were created correctly"""
-    organized_dir = Path("data/processed/organized")
-    
     print("\n" + "=" * 60)
     print("VERIFYING SPLITS")
     print("=" * 60)
@@ -117,10 +124,9 @@ def verify_splits():
         print(f"   Masks:  {num_masks}")
         
         if num_images == num_masks and num_images > 0:
-            print(f"   ✅ Match! Ready for training")
+            print(f"   ✅ Match!")
         else:
-            print(f"   ❌ Mismatch! Run create_splits.py again")
+            print(f"   ❌ Mismatch!")
 
 if __name__ == "__main__":
     create_splits()
-    verify_splits()
