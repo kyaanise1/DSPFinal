@@ -1,4 +1,4 @@
-# src/create_splits.py (FIXED - Exact Counts)
+# src/create_splits.py (UPDATED FOR STANDARDIZED DATA)
 import numpy as np
 from pathlib import Path
 from sklearn.model_selection import train_test_split
@@ -7,20 +7,35 @@ import shutil
 def create_splits():
     """Create train/val/test splits with exact counts"""
     
-    # Paths
-    original_image_dir = Path("data/raw/images")
-    mask_dir = Path("data/processed/training_masks")
+    # ============================================
+    # UPDATED PATHS - USING STANDARDIZED DATA
+    # ============================================
+    original_image_dir = Path("data/standardized/images")   # ← CHANGED
+    mask_dir = Path("data/standardized/masks")              # ← CHANGED
     
     print("=" * 60)
     print("CREATING TRAIN/VAL/TEST SPLITS")
     print("=" * 60)
+    print(f"Image directory: {original_image_dir}")
+    print(f"Mask directory: {mask_dir}")
+    
+    # Check if directories exist
+    if not original_image_dir.exists():
+        print(f"\n❌ ERROR: {original_image_dir} not found!")
+        print("   Run resize_dataset.py first!")
+        return
+    
+    if not mask_dir.exists():
+        print(f"\n❌ ERROR: {mask_dir} not found!")
+        print("   Run resize_dataset.py first!")
+        return
     
     # Get all mask files
     mask_files = list(mask_dir.glob("*_mask.png"))
     image_ids = [f.stem.replace("_mask", "") for f in mask_files]
     
     total = len(image_ids)
-    print(f"Total images: {total}")
+    print(f"\nTotal images found: {total}")
     
     if total == 0:
         print("No masks found!")
@@ -39,14 +54,14 @@ def create_splits():
     # First split: separate test set
     train_val, test = train_test_split(
         image_ids, 
-        test_size=test_count,  # Use exact count instead of ratio
+        test_size=test_count,
         random_state=42
     )
     
     # Second split: separate val from train
     train, val = train_test_split(
         train_val,
-        test_size=val_count,  # Use exact count
+        test_size=val_count,
         random_state=42
     )
     
@@ -71,9 +86,8 @@ def create_splits():
     # Create organized folders
     organized_dir = Path("data/processed/organized")
     
-    # Remove existing organized folder if it exists (to avoid leftover files)
+    # Remove existing organized folder if it exists
     if organized_dir.exists():
-        import shutil
         shutil.rmtree(organized_dir)
     
     print(f"\n📁 Creating organized folders...")
@@ -85,21 +99,25 @@ def create_splits():
         split_mask_dir.mkdir(parents=True, exist_ok=True)
         
         for img_id in split_ids:
-            # Copy original image
+            # Copy original image (from standardized folder)
             src_img = original_image_dir / f"{img_id}.jpg"
             dst_img = split_img_dir / f"{img_id}.jpg"
             if src_img.exists():
                 shutil.copy(src_img, dst_img)
+            else:
+                print(f"   Warning: {src_img} not found")
             
-            # Copy mask
+            # Copy mask (from standardized folder)
             src_mask = mask_dir / f"{img_id}_mask.png"
             dst_mask = split_mask_dir / f"{img_id}_mask.png"
             if src_mask.exists():
                 shutil.copy(src_mask, dst_mask)
+            else:
+                print(f"   Warning: {src_mask} not found")
         
         print(f"   {split_name}: {len(split_ids)} images + masks")
     
-    print(f"\n Organized data saved to {organized_dir}")
+    print(f"\n✅ Organized data saved to {organized_dir}")
     
     # Verify
     verify_splits(organized_dir)
@@ -124,9 +142,30 @@ def verify_splits(organized_dir):
         print(f"   Masks:  {num_masks}")
         
         if num_images == num_masks and num_images > 0:
-            print(f"   Match!")
+            print(f"   ✅ Match! Ready for training")
         else:
-            print(f"   Mismatch!")
+            print(f"   ❌ Mismatch!")
+
+def check_image_sizes():
+    """Check that all images are 256x256"""
+    organized_dir = Path("data/processed/organized")
+    
+    if not organized_dir.exists():
+        print("Run create_splits() first")
+        return
+    
+    print("\n" + "=" * 60)
+    print("CHECKING IMAGE SIZES")
+    print("=" * 60)
+    
+    for split in ['train', 'val', 'test']:
+        img_dir = organized_dir / split / "images"
+        if img_dir.exists():
+            sample = list(img_dir.glob("*.jpg"))[0]
+            import cv2
+            img = cv2.imread(str(sample))
+            print(f"{split}: {img.shape[:2]} (expected 256x256)")
 
 if __name__ == "__main__":
     create_splits()
+    check_image_sizes()

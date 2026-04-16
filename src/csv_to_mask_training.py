@@ -112,7 +112,7 @@ def batch_convert():
         cv2.imwrite(str(output_path), mask)
         success_count += 1
     
-    print(f"\n✓ Saved {success_count} training masks to {output_dir}")
+    print(f"\n Saved {success_count} training masks to {output_dir}")
     
     # Verify
     verify_masks(output_dir)
@@ -134,11 +134,11 @@ def verify_masks(mask_dir):
         print(f"  Min: {mask.min()}, Max: {mask.max()}")
         
         if set(unique) == {0, 1, 2, 3, 4, 5}:
-            print(f"  ✅ PERFECT! Ready for U-Net/Mask R-CNN training")
+            print(f"  PERFECT! Ready for U-Net/Mask R-CNN training")
         elif set(unique).issubset({0, 1, 2, 3, 4, 5}):
-            print(f"  ⚠️ Missing some classes, but acceptable")
+            print(f"  Missing some classes, but acceptable")
         else:
-            print(f"  ❌ ERROR: Unexpected values! Should be 0-5 only")
+            print(f"  ERROR: Unexpected values! Should be 0-5 only")
 
 if __name__ == "__main__":
     batch_convert()
