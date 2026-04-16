@@ -99,7 +99,7 @@ def create_splits():
         
         print(f"   {split_name}: {len(split_ids)} images + masks")
     
-    print(f"\n✅ Organized data saved to {organized_dir}")
+    print(f"\n Organized data saved to {organized_dir}")
     
     # Verify
     verify_splits(organized_dir)
@@ -124,9 +124,9 @@ def verify_splits(organized_dir):
         print(f"   Masks:  {num_masks}")
         
         if num_images == num_masks and num_images > 0:
-            print(f"   ✅ Match!")
+            print(f"   Match!")
         else:
-            print(f"   ❌ Mismatch!")
+            print(f"   Mismatch!")
 
 if __name__ == "__main__":
     create_splits()
