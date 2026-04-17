@@ -1,82 +1,59 @@
-# src/basp_pipeline.py
+# src/phase2_preprocessing.py
+"""
+Phase 2: BASP Preprocessing Ablation Experiments
+Applies different preprocessing combinations to U-Net and Mask R-CNN branches
+
+Image Standardization (resize + padding) is already done in Phase 1.
+This script applies CLAHE and/or Anisotropic Diffusion as per ablation setup.
+"""
+
 import cv2
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
-class BASPPipeline:
+class BASPPreprocessor:
     """
-    Branch-Adaptive Selective Preprocessing (BASP) Pipeline
-    For multiclass lumbar vertebral segmentation
+    Branch-Adaptive Selective Preprocessing (BASP)
+    Implements 4 ablation variants for VertXNet ensemble
     """
     
-    def __init__(self, target_size=(512, 512)):
-        """
-        Args:
-            target_size: (height, width) for image standardization
-        """
-        self.target_size = target_size
+    def __init__(self, clahe_clip_limit=2.0, clahe_grid_size=(8, 8), 
+                 ad_iterations=5, ad_kappa=50, ad_gamma=0.1):
+        self.clahe_clip_limit = clahe_clip_limit
+        self.clahe_grid_size = clahe_grid_size
+        self.ad_iterations = ad_iterations
+        self.ad_kappa = ad_kappa
+        self.ad_gamma = ad_gamma
         
-        # CLAHE parameters
-        self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        
-        # Anisotropic Diffusion parameters
-        self.ad_iterations = 5
-        self.ad_kappa = 50
-        self.ad_gamma = 0.1
-    
-    # ============================================
-    # STEP 1: IMAGE STANDARDIZATION
-    # ============================================
-    
-    def standardize(self, image):
-        """
-        Image Standardization:
-        - Resize to fixed dimensions
-        - Normalize intensity (0-255 range)
-        """
-        # Resize
-        resized = cv2.resize(image, self.target_size)
-        
-        # Normalize intensity (if needed)
-        if resized.max() > 0:
-            normalized = (resized / resized.max() * 255).astype(np.uint8)
-        else:
-            normalized = resized
-        
-        return normalized
-    
-    # ============================================
-    # STEP 2: PREPROCESSING (BASP - Branch Specific)
-    # ============================================
+        # Initialize CLAHE
+        self.clahe = cv2.createCLAHE(
+            clipLimit=clahe_clip_limit,
+            tileGridSize=clahe_grid_size
+        )
     
     def apply_clahe(self, image):
         """Apply CLAHE contrast enhancement"""
-        # Convert to grayscale if color
         if len(image.shape) == 3:
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         else:
             gray = image.copy()
         
-        # Apply CLAHE
         enhanced = self.clahe.apply(gray)
         
-        # Convert back to 3-channel
         if len(image.shape) == 3:
             enhanced = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
         
         return enhanced
     
     def apply_anisotropic_diffusion(self, image):
-        """Apply edge-preserving denoising"""
-        # Convert to grayscale if color
+        """Apply edge-preserving denoising (Perona-Malik)"""
         if len(image.shape) == 3:
             img_float = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.float32)
         else:
             img_float = image.astype(np.float32)
         
-        # Perona-Malik diffusion
         for _ in range(self.ad_iterations):
             dx = cv2.Sobel(img_float, cv2.CV_32F, 1, 0, ksize=3)
             dy = cv2.Sobel(img_float, cv2.CV_32F, 0, 1, ksize=3)
@@ -86,7 +63,6 @@ class BASPPipeline:
             
             img_float = img_float + self.ad_gamma * (c_dx * dx + c_dy * dy)
         
-        # Convert back
         result = np.clip(img_float, 0, 255).astype(np.uint8)
         
         if len(image.shape) == 3:
@@ -95,274 +71,269 @@ class BASPPipeline:
         return result
     
     def apply_clahe_ad(self, image):
-        """CLAHE followed by Anisotropic Diffusion"""
+        """Apply CLAHE followed by Anisotropic Diffusion"""
         return self.apply_anisotropic_diffusion(self.apply_clahe(image))
     
     # ============================================
-    # BRANCH-SPECIFIC PREPROCESSING (BASP)
+    # BASP (PROPOSED)
     # ============================================
-    
-    def preprocess_u_net(self, image):
+    def basp_proposed(self, image):
         """
-        U-Net branch preprocessing:
-        Standardize → CLAHE → Anisotropic Diffusion
+        Proposed BASP Method:
+        - U-Net: CLAHE + AD
+        - Mask R-CNN: Raw (no preprocessing)
         """
-        standardized = self.standardize(image)
-        return self.apply_clahe_ad(standardized)
-    
-    def preprocess_mask_rcnn(self, image):
-        """
-        Mask R-CNN branch preprocessing:
-        Standardize only (Raw)
-        """
-        return self.standardize(image)
+        unet_input = self.apply_clahe_ad(image)
+        maskrcnn_input = image.copy()
+        return unet_input, maskrcnn_input
     
     # ============================================
-    # STEP 3: ENSEMBLE MODULE
+    # SELECTIVE CLAHE
     # ============================================
-    
-    def ensemble_module(self, unet_masks, maskrcnn_masks):
+    def selective_clahe(self, image):
         """
-        Ensemble Module with:
-        1. Agreement matching
-        2. Overlap resolution
-        3. Missed vertebra recovery
-        4. Mask selection and sorting
-        
-        Args:
-            unet_masks: List of masks from U-Net (semantic)
-            maskrcnn_masks: List of masks from Mask R-CNN (instance)
-        
-        Returns:
-            final_masks: List of merged, sorted masks with vertebra labels
+        Selective CLAHE:
+        - U-Net: CLAHE + AD
+        - Mask R-CNN: AD only
         """
-        
-        # Step 1: Agreement matching
-        # Match U-Net and Mask R-CNN masks by centroid distance
-        matched_pairs = self.match_masks(unet_masks, maskrcnn_masks)
-        
-        # Step 2: Overlap resolution
-        # Resolve overlapping masks (keep higher confidence)
-        resolved_masks = self.resolve_overlaps(matched_pairs)
-        
-        # Step 3: Missed vertebra recovery
-        # If a vertebra is detected by only one model, include it
-        recovered_masks = self.recover_missed(unet_masks, maskrcnn_masks, resolved_masks)
-        
-        # Step 4: Mask selection and sorting
-        # Sort by anatomical order (top to bottom: L1→L5)
-        final_masks = self.sort_masks(recovered_masks)
-        
-        return final_masks
-    
-    def match_masks(self, unet_masks, maskrcnn_masks):
-        """Match masks by centroid distance"""
-        matched = []
-        
-        for unet_mask in unet_masks:
-            unet_centroid = self.get_centroid(unet_mask)
-            best_match = None
-            best_distance = float('inf')
-            
-            for rcnn_mask in maskrcnn_masks:
-                rcnn_centroid = self.get_centroid(rcnn_mask)
-                distance = np.linalg.norm(unet_centroid - rcnn_centroid)
-                
-                if distance < best_distance and distance < 50:  # Threshold
-                    best_distance = distance
-                    best_match = rcnn_mask
-            
-            if best_match is not None:
-                matched.append((unet_mask, best_match))
-        
-        return matched
-    
-    def resolve_overlaps(self, matched_pairs):
-        """Resolve overlapping masks"""
-        resolved = []
-        
-        for unet_mask, rcnn_mask in matched_pairs:
-            # Combine masks (agreement = keep both)
-            combined = cv2.bitwise_or(unet_mask, rcnn_mask)
-            resolved.append(combined)
-        
-        return resolved
-    
-    def recover_missed(self, unet_masks, maskrcnn_masks, resolved):
-        """Recover vertebrae missed by one model"""
-        recovered = resolved.copy()
-        
-        # Get centroids of already resolved masks
-        existing_centroids = [self.get_centroid(m) for m in resolved]
-        
-        # Check U-Net masks not yet included
-        for mask in unet_masks:
-            centroid = self.get_centroid(mask)
-            if not self.is_duplicate(centroid, existing_centroids):
-                recovered.append(mask)
-        
-        # Check Mask R-CNN masks not yet included
-        for mask in maskrcnn_masks:
-            centroid = self.get_centroid(mask)
-            if not self.is_duplicate(centroid, existing_centroids):
-                recovered.append(mask)
-        
-        return recovered
-    
-    def sort_masks(self, masks):
-        """Sort masks by anatomical order (top to bottom = L1 to L5)"""
-        # Get centroids and sort by y-coordinate
-        with_centroids = [(m, self.get_centroid(m)[1]) for m in masks]
-        sorted_masks = sorted(with_centroids, key=lambda x: x[1])  # Sort by y
-        
-        # Assign vertebra labels (L1 to L5)
-        vertebra_labels = ['L1', 'L2', 'L3', 'L4', 'L5']
-        final_masks = []
-        
-        for idx, (mask, y) in enumerate(sorted_masks[:5]):
-            final_masks.append({
-                'mask': mask,
-                'label': vertebra_labels[idx] if idx < len(vertebra_labels) else f'V{idx+1}',
-                'centroid_y': y
-            })
-        
-        return final_masks
-    
-    def get_centroid(self, mask):
-        """Calculate centroid of a binary mask"""
-        moments = cv2.moments(mask)
-        if moments['m00'] != 0:
-            cx = int(moments['m10'] / moments['m00'])
-            cy = int(moments['m01'] / moments['m00'])
-            return np.array([cx, cy])
-        return np.array([0, 0])
-    
-    def is_duplicate(self, centroid, existing_centroids, threshold=30):
-        """Check if centroid is too close to existing ones"""
-        for existing in existing_centroids:
-            if np.linalg.norm(centroid - existing) < threshold:
-                return True
-        return False
+        unet_input = self.apply_clahe_ad(image)
+        maskrcnn_input = self.apply_anisotropic_diffusion(image)
+        return unet_input, maskrcnn_input
     
     # ============================================
-    # STEP 4: VERTEBRA IDENTIFICATION
+    # SELECTIVE AD
     # ============================================
-    
-    def identify_vertebrae(self, final_masks):
+    def selective_ad(self, image):
         """
-        Vertebra Identification using reference vertebra (S1 anchor)
-        
-        Since BUU-LSPINE(400) has no S1, we use L1 as reference
-        and label sequentially down to L5
+        Selective Anisotropic Diffusion:
+        - U-Net: CLAHE + AD
+        - Mask R-CNN: CLAHE only
         """
-        # Sort by y-coordinate (top to bottom)
-        sorted_masks = sorted(final_masks, key=lambda x: x['centroid_y'])
-        
-        # Assign labels sequentially
-        vertebra_names = ['L1', 'L2', 'L3', 'L4', 'L5']
-        
-        for idx, item in enumerate(sorted_masks[:5]):
-            item['label'] = vertebra_names[idx]
-        
-        return sorted_masks
+        unet_input = self.apply_clahe_ad(image)
+        maskrcnn_input = self.apply_clahe(image)
+        return unet_input, maskrcnn_input
     
     # ============================================
-    # FULL PIPELINE
+    # FULL NON-SELECTIVE
     # ============================================
-    
-    def process(self, image):
+    def full_non_selective(self, image):
         """
-        Run full BASP pipeline on a single image
-        
-        Args:
-            image: Raw X-ray image
-        
-        Returns:
-            final_segmentation: Labeled vertebral masks
+        Full Non-Selective:
+        - U-Net: CLAHE + AD
+        - Mask R-CNN: CLAHE + AD
         """
-        # Step 1 & 2: Branch-specific preprocessing
-        unet_input = self.preprocess_u_net(image)
-        maskrcnn_input = self.preprocess_mask_rcnn(image)
-        
-        # Step 3: Segmentation (placeholder - actual models to be implemented)
-        # unet_masks = self.u_net.predict(unet_input)
-        # maskrcnn_masks = self.mask_rcnn.predict(maskrcnn_input)
-        
-        # Placeholder for now
-        unet_masks = []
-        maskrcnn_masks = []
-        
-        # Step 4: Ensemble
-        ensemble_masks = self.ensemble_module(unet_masks, maskrcnn_masks)
-        
-        # Step 5: Vertebra identification
-        final_result = self.identify_vertebrae(ensemble_masks)
-        
-        return final_result
+        processed = self.apply_clahe_ad(image)
+        return processed, processed
 
 
-def visualize_basp_pipeline():
-    """Visualize the BASP pipeline steps on a sample image"""
+def run_ablation_experiments():
+    """
+    Apply all 4 ablation variants to the training dataset.
+    Input: Standardized images (256x256 + padding) from Phase 1
+    Output: Preprocessed images for each ablation variant
+    """
     
-    pipeline = BASPPipeline()
+    # Input: Standardized images from Phase 1
+    input_dir = Path("data/processed/organized/train/images")
     
-    # Load sample image
-    sample_path = Path("data/raw/images/0001-F-037Y1.jpg")
+    # Output: Preprocessed images for each ablation
+    output_base = Path("data/processed/ablation")
+    
+    print("=" * 60)
+    print("PHASE 2: BASP PREPROCESSING ABLATION EXPERIMENTS")
+    print("=" * 60)
+    print(f"Input (standardized images): {input_dir}")
+    print(f"Output base: {output_base}")
+    
+    # Check input directory
+    if not input_dir.exists():
+        print(f"\n Input directory not found: {input_dir}")
+        print("   Make sure Phase 1 (resize + splits) is complete.")
+        return
+    
+    # Initialize preprocessor
+    preprocessor = BASPPreprocessor()
+    
+    # Define 4 ablation variants with CLEAN NAMES
+    ablations = {
+        'basp_proposed': {
+            'name': 'BASP (Proposed)',
+            'func': preprocessor.basp_proposed,
+            'unet_desc': 'CLAHE + AD',
+            'rcnn_desc': 'Raw (No preprocessing)'
+        },
+        'selective_clahe': {
+            'name': 'Selective CLAHE',
+            'func': preprocessor.selective_clahe,
+            'unet_desc': 'CLAHE + AD',
+            'rcnn_desc': 'AD only'
+        },
+        'selective_ad': {
+            'name': 'Selective AD',
+            'func': preprocessor.selective_ad,
+            'unet_desc': 'CLAHE + AD',
+            'rcnn_desc': 'CLAHE only'
+        },
+        'full_non_selective': {
+            'name': 'Full Non-Selective',
+            'func': preprocessor.full_non_selective,
+            'unet_desc': 'CLAHE + AD',
+            'rcnn_desc': 'CLAHE + AD'
+        }
+    }
+    
+    # Get all training images
+    image_files = list(input_dir.glob("*.jpg"))
+    print(f"\nFound {len(image_files)} training images")
+    
+    if len(image_files) == 0:
+        print("No images found!")
+        return
+    
+    # Process each ablation variant
+    print("\n📊 Processing Ablation Variants...")
+    print("-" * 60)
+    
+    for ab_key, ab_info in ablations.items():
+        # Create output directories with CLEAN NAMES
+        unet_dir = output_base / ab_key / "unet_input"
+        rcnn_dir = output_base / ab_key / "maskrcnn_input"
+        unet_dir.mkdir(parents=True, exist_ok=True)
+        rcnn_dir.mkdir(parents=True, exist_ok=True)
+        
+        print(f"\n🔬 {ab_info['name']}:")
+        print(f"   U-Net input: {ab_info['unet_desc']}")
+        print(f"   Mask R-CNN input: {ab_info['rcnn_desc']}")
+        
+        # Process each image
+        for img_path in tqdm(image_files, desc=f"   Processing"):
+            image = cv2.imread(str(img_path))
+            if image is None:
+                continue
+            
+            # Apply ablation preprocessing
+            unet_input, rcnn_input = ab_info['func'](image)
+            
+            # Save
+            unet_path = unet_dir / img_path.name
+            rcnn_path = rcnn_dir / img_path.name
+            
+            cv2.imwrite(str(unet_path), unet_input)
+            cv2.imwrite(str(rcnn_path), rcnn_input)
+        
+        # Count saved files
+        unet_count = len(list(unet_dir.glob("*.jpg")))
+        rcnn_count = len(list(rcnn_dir.glob("*.jpg")))
+        print(f"    Saved: {unet_count} U-Net + {rcnn_count} Mask R-CNN images")
+    
+    # Print summary
+    print("\n" + "=" * 60)
+    print(" PHASE 2 COMPLETE!")
+    print("=" * 60)
+    print("\n Output structure:")
+    print("   data/processed/ablation/")
+    print("   ├── basp_proposed/")
+    print("   │   ├── unet_input/")
+    print("   │   └── maskrcnn_input/")
+    print("   ├── selective_clahe/")
+    print("   │   ├── unet_input/")
+    print("   │   └── maskrcnn_input/")
+    print("   ├── selective_ad/")
+    print("   │   ├── unet_input/")
+    print("   │   └── maskrcnn_input/")
+    print("   └── full_non_selective/")
+    print("       ├── unet_input/")
+    print("       └── maskrcnn_input/")
+    
+    return ablations
+
+
+def visualize_ablation_comparison():
+    """Visualize all 4 ablation variants side by side"""
+    
+    preprocessor = BASPPreprocessor()
+    
+    # Load a sample standardized image
+    sample_path = Path("data/standardized/images/0001-F-037Y1.jpg")
     
     if not sample_path.exists():
         print(f"Sample not found: {sample_path}")
         return
     
-    image = cv2.imread(str(sample_path))
-    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    original = cv2.imread(str(sample_path))
+    original_rgb = cv2.cvtColor(original, cv2.COLOR_BGR2RGB)
     
-    # Apply each step
-    standardized = pipeline.standardize(image)
-    standardized_rgb = cv2.cvtColor(standardized, cv2.COLOR_BGR2RGB)
+    # Apply all ablations
+    basp_unet, basp_rcnn = preprocessor.basp_proposed(original)
+    sel_clahe_unet, sel_clahe_rcnn = preprocessor.selective_clahe(original)
+    sel_ad_unet, sel_ad_rcnn = preprocessor.selective_ad(original)
+    full_unet, full_rcnn = preprocessor.full_non_selective(original)
     
-    unet_input = pipeline.preprocess_u_net(image)
-    unet_input_rgb = cv2.cvtColor(unet_input, cv2.COLOR_BGR2RGB)
+    # Convert to RGB
+    basp_unet_rgb = cv2.cvtColor(basp_unet, cv2.COLOR_BGR2RGB)
+    basp_rcnn_rgb = cv2.cvtColor(basp_rcnn, cv2.COLOR_BGR2RGB)
+    sel_clahe_rcnn_rgb = cv2.cvtColor(sel_clahe_rcnn, cv2.COLOR_BGR2RGB)
+    sel_ad_rcnn_rgb = cv2.cvtColor(sel_ad_rcnn, cv2.COLOR_BGR2RGB)
+    full_rcnn_rgb = cv2.cvtColor(full_rcnn, cv2.COLOR_BGR2RGB)
     
-    maskrcnn_input = pipeline.preprocess_mask_rcnn(image)
-    maskrcnn_input_rgb = cv2.cvtColor(maskrcnn_input, cv2.COLOR_BGR2RGB)
+    # Create figure
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
     
-    # Create visualization
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-    
-    axes[0, 0].imshow(image_rgb, cmap='gray')
-    axes[0, 0].set_title("Step 1: Raw X-ray")
+    # Top row: U-Net inputs (all identical - CLAHE+AD)
+    axes[0, 0].imshow(basp_unet_rgb, cmap='gray')
+    axes[0, 0].set_title("U-Net Input\n(CLAHE + AD)\nSame for ALL ablations", fontsize=11)
     axes[0, 0].axis('off')
-    
-    axes[0, 1].imshow(standardized_rgb, cmap='gray')
-    axes[0, 1].set_title("Step 2: Standardized\n(Resize + Normalize)")
     axes[0, 1].axis('off')
+    axes[0, 2].axis('off')
     
-    axes[1, 0].imshow(unet_input_rgb, cmap='gray')
-    axes[1, 0].set_title("Step 3: U-Net Branch\n(CLAHE + Anisotropic Diffusion)")
+    # Bottom row: Mask R-CNN inputs (varies by ablation)
+    axes[1, 0].imshow(basp_rcnn_rgb, cmap='gray')
+    axes[1, 0].set_title("BASP (Proposed)\nMask R-CNN: Raw", fontsize=11)
     axes[1, 0].axis('off')
     
-    axes[1, 1].imshow(maskrcnn_input_rgb, cmap='gray')
-    axes[1, 1].set_title("Step 3: Mask R-CNN Branch\n(Raw - No Enhancement)")
+    axes[1, 1].imshow(sel_clahe_rcnn_rgb, cmap='gray')
+    axes[1, 1].set_title("Selective CLAHE\nMask R-CNN: AD only", fontsize=11)
     axes[1, 1].axis('off')
     
-    plt.suptitle("BASP Pipeline: Branch-Adaptive Selective Preprocessing", fontsize=14)
+    axes[1, 2].imshow(full_rcnn_rgb, cmap='gray')
+    axes[1, 2].set_title("Full Non-Selective\nMask R-CNN: CLAHE+AD", fontsize=11)
+    axes[1, 2].axis('off')
+    
+    plt.suptitle("BASP Ablation Study: Mask R-CNN Branch Variations\n(U-Net branch fixed: CLAHE+AD for all)", fontsize=14)
     plt.tight_layout()
-    plt.savefig("basp_pipeline_visualization.png", dpi=150, bbox_inches='tight')
+    plt.savefig("basp_ablation_comparison.png", dpi=150, bbox_inches='tight')
     plt.show()
     
-    print("✅ BASP Pipeline visualization saved as 'basp_pipeline_visualization.png'")
+    print("✅ Visualization saved as 'basp_ablation_comparison.png'")
+
+
+def print_summary_table():
+    """Print ablation summary table"""
+    print("\n" + "=" * 60)
+    print("ABLATION SUMMARY TABLE")
+    print("=" * 60)
+    print("\n| # | Ablation Name          | U-Net Input    | Mask R-CNN Input    |")
+    print("|---|------------------------|----------------|---------------------|")
+    print("| 1 | BASP (Proposed)        | CLAHE + AD     | Raw (—)             |")
+    print("| 2 | Selective CLAHE        | CLAHE + AD     | AD only             |")
+    print("| 3 | Selective AD           | CLAHE + AD     | CLAHE only          |")
+    print("| 4 | Full Non-Selective     | CLAHE + AD     | CLAHE + AD          |")
+    print("=" * 60)
 
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("BASP: BRANCH-ADAPTIVE SELECTIVE PREPROCESSING PIPELINE")
+    print("\n" + "=" * 60)
+    print("BASP: BRANCH-ADAPTIVE SELECTIVE PREPROCESSING")
+    print("PHASE 2 - PREPROCESSING ABLATION EXPERIMENTS")
     print("=" * 60)
     
-    visualize_basp_pipeline()
+    # Print summary table
+    print_summary_table()
     
-    print("\n📋 BASP Pipeline Summary:")
-    print("   1. Image Standardization (Resize + Normalize)")
-    print("   2. U-Net Branch: CLAHE → Anisotropic Diffusion")
-    print("   3. Mask R-CNN Branch: Raw (No enhancement)")
-    print("   4. Ensemble Module (Agreement + Overlap + Recovery + Sorting)")
-    print("   5. Vertebra Identification (L1-L5 labeling)")
+    # Visualize comparison
+    visualize_ablation_comparison()
+    
+    # Run ablation experiments
+    run_ablation_experiments()
+    
+    print("\n Phase 2 Complete!")
